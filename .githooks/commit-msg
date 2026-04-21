@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Reject commit messages containing AI authorship attributions.
+#
+# Enable: git config core.hooksPath .githooks
+
+set -e
+
+msg_file="$1"
+[ -z "$msg_file" ] && exit 0
+[ ! -f "$msg_file" ] && exit 0
+
+# Patterns to reject (case-insensitive).
+patterns=(
+  'co-authored-by:[[:space:]]*[^<]*(claude|anthropic|copilot|gpt|openai|gemini|bard|cursor|codeium)'
+  '(generated|written|authored|produced)[[:space:]]+with[[:space:]]+(claude|anthropic|copilot|chatgpt|gpt|openai|gemini|cursor|ai)'
+  'claude\.ai/code'
+  'anthropic\.com'
+)
+
+for pattern in "${patterns[@]}"; do
+  if grep -qiE "$pattern" "$msg_file"; then
+    echo "ERROR: commit message contains an AI authorship attribution." >&2
+    echo "Matched pattern: $pattern" >&2
+    echo "" >&2
+    echo "Offending lines:" >&2
+    grep -niE "$pattern" "$msg_file" >&2
+    echo "" >&2
+    echo "Remove AI co-author lines and 'Generated with' markers before committing." >&2
+    exit 1
+  fi
+done
+
+# Also reject the robot emoji sometimes inserted by AI tooling.
+if grep -qF '🤖' "$msg_file"; then
+  echo "ERROR: commit message contains the 🤖 emoji commonly inserted by AI tooling." >&2
+  echo "Remove it before committing." >&2
+  exit 1
+fi
+
+exit 0
