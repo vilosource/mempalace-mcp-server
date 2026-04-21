@@ -70,6 +70,40 @@ Location-transparent: the same client works against a server running as a local 
 - Parallel upstream work: push refactors into `vilosource/mempalace` that extract a pure `Palace` facade class with no import-time side effects. When that lands, v2 of the server switches from fork to library import. The v1 fork is a means to not block on upstream.
 - Upstream refactor is tracked in an open question below so the fork doesn't become permanent.
 
+### Learning from the existing stdio server
+
+`mempalace/mcp_server.py` is not just a source of facts and code to vendor — it is a working MCP server for this palace's data model, and the server should lift patterns from it rather than reinvent them. A few specific patterns inform the v1 design:
+
+**Lift wholesale (proven, transport-agnostic):**
+
+- **`TOOLS` dict dispatch** (`mcp_server.py:1144-1560`). Each entry is `{description, input_schema, handler}`. 31 entries already defined. The HTTP server uses the same registry; only the JSON-RPC envelope around it changes.
+- **`handle_request()` core dispatch** (`mcp_server.py:1571-1670`). Handles `initialize` (with `SUPPORTED_PROTOCOL_VERSIONS` negotiation), `ping`, `notifications/*`, `tools/list`, `tools/call`. The stream transport replaces stdin/stdout framing but the method switch is unchanged.
+- **Arg whitelisting via `inspect.signature()`** (`mcp_server.py:1617-1633`). Drops any caller-supplied keys not declared in the tool's `input_schema.properties`, unless the handler accepts `**kwargs`. This is what prevents callers from spoofing internal params like `source_file` or `added_by` today, and it is load-bearing for the attribution model — without it, a client could supply `caller_id` and override the server-set value.
+- **JSON type coercion** (`mcp_server.py:1634-1650`). MCP over JSON delivers integers as floats or strings. The existing coercion on `declared_type == "integer" | "number"` handles this cleanly. Keep.
+- **Error-code conventions.** `-32601` unknown tool, `-32602` invalid param, `-32000` internal tool error. The server extends this space for identity-resolution failures, embedding-model mismatches, etc. — keep the numeric range, add specific codes.
+- **WAL redaction** via `_WAL_REDACT_KEYS` (`mcp_server.py:133-136`). The set `{content, content_preview, document, entry, entry_preview, query, text}` is the right default. Lift and extend as new params appear.
+- **Sanitizers** in `config.py` — `sanitize_name()` (MAX_NAME_LENGTH=128, charset), `sanitize_content()` (≤100KB, no null bytes), `sanitize_query()` (prompt-injection heuristics). All are transport-independent input validation; the server uses them unchanged.
+
+**Discard (workarounds for problems the server design eliminates):**
+
+- **`_get_client()` inode/mtime reconnect detection** (`mcp_server.py:162-211`). This is a workaround for external processes mutating the palace — exactly the problem the single-writer server eliminates. Under the server, the Chroma client is built once on boot and held for the process lifetime. No cache invalidation logic.
+- **Module-level caches** (`_client_cache`, `_collection_cache`, `_metadata_cache`, `_palace_db_inode`, `_palace_db_mtime`). Redundant once `_get_client()` is gone; replaced by a single long-lived client owned by the server process.
+- **`tool_reconnect` as a functional tool** (`mcp_server.py:1119-1126`). Becomes a semantic no-op (see Tool surface above).
+- **Import-time initialization** (`mcp_server.py:92-123`). The singletons — `_args = _parse_args()`, `_config = MempalaceConfig()`, `_kg = KnowledgeGraph()` — all moved into explicit construction inside the server's startup sequence. No stdio hijacking.
+
+**Enhance (existing shape, new responsibility):**
+
+- **Dispatch chokepoint** gets an identity-resolution step before the handler runs. `caller_id` comes from the bearer token → identity map, is injected into the handler's context, and is stamped into WAL + drawer metadata + KG rows. The whitelisting step already strips any client-supplied `caller_id`, so the server's value is authoritative.
+- **`_wal_log()`** (`mcp_server.py:139-153`) gains a `caller_id` field in the entry. Redaction logic unchanged.
+- **Error responses** add request IDs for correlation with server-side logs.
+
+**Patterns worth studying but not yet decided:**
+
+- **`_get_collection(create=False)` lazy initialization** (`mcp_server.py:214`). Should the server eagerly load both `mempalace_drawers` and `mempalace_closets` on boot (predictable latency, higher idle RAM) or lazily on first use (fast boot, latency spike on first query)? Decision depends on prototype measurements.
+- **`quarantine_stale_hnsw()`** (`backends/chroma.py:52-67`). The drift detection triggers a fallback that quarantines a bad segment and rebuilds. Under the server this fires only at boot; the runtime risk disappears. Keep the boot-time detection as a belt-and-suspenders check for palaces migrated from stdio, but the code path that handles drift *during* runtime becomes dead — worth documenting as removed.
+
+This inventory also guides vendoring: v1 copies `mcp_server.py`, `palace.py`, `knowledge_graph.py`, `palace_graph.py`, `searcher.py`, `backends/chroma.py`, `config.py`, `query_sanitizer.py`, `miner.py` (for drawer ID logic), and the sanitizers. It strips the import-time init, the reconnect detection, and the stdio framing, then wraps the dispatcher in streamable-HTTP transport.
+
 ## Non-goals
 
 - **Multi-tenant single server.** One process serving multiple palaces with per-request `palace_id` routing is out of scope. Each palace gets its own server instance.
