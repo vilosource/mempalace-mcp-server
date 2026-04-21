@@ -1,0 +1,37 @@
+# Example server config. Copy to /etc/mempalace-server/config.yaml or
+# ~/.config/mempalace-server/config.yaml, then customize.
+
+# Palace data root (a MemPalace ~/.mempalace-shaped directory).
+data_root: /tmp/mempalace-spike
+
+bind:
+  host: 127.0.0.1
+  port: 8080
+  metrics_path: /metrics
+
+embedding:
+  model: all-MiniLM-L6-v2
+  dim: 384
+  enforce_match: true
+
+auth:
+  # SHA-256 of the raw bearer token. Never put the raw token here.
+  # Generate with: echo -n "your-token" | sha256sum
+  tokens:
+    - token_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+      identity: "default"
+  read_policy: required
+
+logging:
+  level: INFO
+  format: json
+
+wal:
+  redact_keys:
+    - content
+    - content_preview
+    - document
+    - entry
+    - entry_preview
+    - query
+    - text
