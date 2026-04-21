@@ -112,3 +112,75 @@ def delete(data_root: Path, tunnel_id: str) -> dict:
         "tunnel_id": tunnel_id,
         "deleted": before != len(remaining),
     }
+
+
+# ── Read operations ──────────────────────────────────────────────────────
+
+def load_all(data_root: Path) -> list[dict]:
+    return _load(data_root)
+
+
+def list_for_wing(data_root: Path, wing: str | None) -> list[dict]:
+    tunnels = _load(data_root)
+    if not wing:
+        return tunnels
+    return [
+        t for t in tunnels
+        if t.get("source", {}).get("wing") == wing
+        or t.get("target", {}).get("wing") == wing
+    ]
+
+
+def endpoints_at(tunnel: dict, wing: str, room: str) -> bool:
+    src = tunnel.get("source", {})
+    tgt = tunnel.get("target", {})
+    return ((src.get("wing") == wing and src.get("room") == room)
+            or (tgt.get("wing") == wing and tgt.get("room") == room))
+
+
+def follow(data_root: Path, wing: str, room: str) -> list[dict]:
+    """Return tunnels that have (wing, room) as one endpoint, with the 'other
+    side' spelled out as a separate field for callers."""
+    hits = []
+    for t in _load(data_root):
+        if not endpoints_at(t, wing, room):
+            continue
+        src = t.get("source", {})
+        tgt = t.get("target", {})
+        if src.get("wing") == wing and src.get("room") == room:
+            other = tgt
+        else:
+            other = src
+        hits.append({
+            "tunnel_id": t.get("id"),
+            "label": t.get("label", ""),
+            "other_wing": other.get("wing"),
+            "other_room": other.get("room"),
+            "other_drawer_id": other.get("drawer_id"),
+            "created_at": t.get("created_at"),
+            "caller_id": t.get("caller_id"),
+        })
+    return hits
+
+
+def find_across_wings(
+    data_root: Path, wing_a: str | None, wing_b: str | None,
+) -> list[dict]:
+    """Tunnels spanning two specific wings (unordered pair). If only one wing
+    is supplied, returns tunnels where at least one endpoint is in that wing
+    and the other is in a different wing."""
+    results = []
+    for t in _load(data_root):
+        sw = t.get("source", {}).get("wing")
+        tw = t.get("target", {}).get("wing")
+        if sw == tw:
+            continue  # only cross-wing tunnels
+        if wing_a and wing_b:
+            pair = {sw, tw}
+            if pair != {wing_a, wing_b}:
+                continue
+        elif wing_a:
+            if wing_a not in (sw, tw):
+                continue
+        results.append(t)
+    return results

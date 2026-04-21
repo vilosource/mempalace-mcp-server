@@ -42,7 +42,7 @@ def build_app(cfg: ServerConfig | None = None):
     wal = WalWriter(wal_path, redact_keys=cfg.wal.redact_keys)
 
     mcp = FastMCP("mempalace-server")
-    admin_tools.register(mcp, palace)
+    admin_tools.register(mcp, palace, wal)
     drawer_tools.register(mcp, palace, wal)
     diary_tools.register(mcp, palace, wal)
     kg_tools.register(mcp, palace, wal)
