@@ -99,6 +99,85 @@ A second client starting in parallel finds the server running at step 3 and skip
 
 **Remote mode.** Bearer token from an external secret store (vault, cloud secret manager, kubectl secret, etc.), forwarded into the client via env, never on disk. TLS required.
 
+Bearer tokens are also the hook for the attribution model below — each token maps to a caller identity that the server stamps onto writes. See Attribution and provenance.
+
+### Attribution and provenance
+
+**Design commitment: v1 is provenance-ready, provenance-off.** Every write path carries authenticated caller identity end-to-end, even though v1 ships with a single identity (`"default"`). Later versions enable real per-client identities without a schema change, migration, or tool-contract break.
+
+#### Two fields, not one
+
+Current MemPalace drawers carry `added_by` — a caller-supplied string defaulting to `"mcp"` (`mcp_server.py:606`, exposed as a public MCP tool arg at `:1410`). It is a free label, not an authenticated identity. A caller can pass `added_by="anyone"`.
+
+The server keeps `added_by` as-is and adds a separate field:
+
+- **`caller_id`** — server-set from the authenticated bearer token via a token→identity map. Never client-supplied. This is the server of record for "who wrote this."
+- **`added_by`** — unchanged: client-declared label for semantic tagging (`"vfdev"`, `"convo-miner"`, `"manual-entry"`). Useful, but not trusted for attribution.
+
+Conflating them is the v1 mistake that kills v2 — once `added_by` is both "free label" and "trust boundary," it can't be either.
+
+#### Write-path invariant
+
+Every server-side write operation (`add_drawer`, `add_tunnel`, any future mutating tool) is routed through a single chokepoint that:
+
+1. Resolves the caller identity from the authenticated token. No write path bypasses this step — if identity resolution fails, the write fails with a specific error, not a silent `"default"` fallback.
+2. Stamps `caller_id` onto persisted drawer/tunnel metadata.
+3. Stamps `caller_id` onto the WAL log entry (see WAL schema below).
+
+v1 resolution always returns `"default"`. v2+ returns the token's mapped identity. The chokepoint signature is stable across versions; only the resolver's configuration changes.
+
+#### WAL schema extension
+
+Current WAL entry (`mcp_server.py:139-153`):
+
+```json
+{"timestamp": "...", "operation": "...", "params": {...}, "result": {...}}
+```
+
+Server-written entries add `caller_id`:
+
+```json
+{"timestamp": "...", "operation": "...", "caller_id": "default", "params": {...}, "result": {...}}
+```
+
+The field is always present in server-written entries. Absent on pre-server entries — readers treat missing `caller_id` as `"legacy-stdio"`. Forensic queries can filter/group by caller without backfill.
+
+#### Token-to-identity map
+
+Server config (not code) defines the map:
+
+```yaml
+# v1 — single default identity
+tokens:
+  - token_sha256: "<hash>"   # never the raw token at rest
+    identity: "default"
+
+# v2+ — multiple identities
+tokens:
+  - token_sha256: "<hash-a>"
+    identity: "jasonvi-laptop"
+  - token_sha256: "<hash-b>"
+    identity: "ci-pipeline"
+  - token_sha256: "<hash-c>"
+    identity: "vfdev-fleet"
+```
+
+Tokens are stored hashed, matched on presentation. Adding a client = adding a config entry + bouncing the server. No code change.
+
+#### Read surface
+
+v1 does not expose `caller_id` in query responses or add identity filters to `mempalace_search` / `mempalace_kg_query`. To avoid backfill later, the SQLite schema indexes `caller_id` on drawer metadata from day 1, so queries like "only drawers added by X" or "not-me recommendations" are a routing change, not a reshape.
+
+#### Explicit v1 non-goals for attribution
+
+- Cryptographic signing of writes (non-repudiation).
+- Per-identity rate limits or quotas.
+- Identity-scoped read filters at the tool surface.
+- Revocation lists (v1 revokes by removing from config + bounce).
+- External identity providers (OIDC, SSO). Tokens stay static bearer tokens.
+
+None of the above is implemented in v1; none of it requires a retrofit if the v1 chokepoint and schema are in place.
+
 ### Network placement
 
 Local server binds to an internal network port only (no `-p` publish) unless the user explicitly wants host-side clients. Clients on the MCP network resolve by container name. Keeps the attack surface small and avoids port conflicts.
@@ -112,6 +191,7 @@ The stdio model has no "server down" state — every session gets a fresh proces
 - **Schema mismatch between client and server.** Server returns a versioned error; client logs and continues with degraded capability rather than crashing. MCP capability negotiation covers protocol version; palace-schema version is a separate concern (see open question).
 - **HNSW index corruption detected on server boot.** The existing `quarantine_stale_hnsw` workaround runs and quarantines the bad segment. Server comes up with reduced recall and logs loudly. Does **not** fail-closed.
 - **Disk full on server host.** Writes fail; the server returns a specific error code so the client can surface it distinctly from a generic internal error.
+- **Caller identity resolution fails.** Bearer token present but not in the token→identity map, or map file unreadable. Server rejects the write with a specific error (not a silent `"default"` fallback) so the attribution invariant is never quietly violated. Reads may still succeed depending on policy (see open question on read-auth).
 
 No graceful-degradation-to-stdio fallback. Dropping the old transport is a non-goal; if the server is down, memory is unavailable for that session.
 
@@ -141,7 +221,7 @@ The existing MemPalace WAL file is a forensic log, not a replayable source of tr
 
 1. **Quiesce.** Close all client sessions that could write to the palace.
 2. **Snapshot.** Copy the palace directory to a backup location. This is the rollback point.
-3. **Launch server.** Start `mempalace-<palace-id>` against the live palace directory (bind-mounted). Server reads existing SQLite + Chroma files in place; schema is unchanged. If `quarantine_stale_hnsw` runs during boot, that's expected — the palace is already subject to the same drift today.
+3. **Launch server.** Start `mempalace-<palace-id>` against the live palace directory (bind-mounted). Server reads existing SQLite + Chroma files in place; the drawer-metadata schema gains `caller_id` (indexed, nullable). Existing rows have `caller_id = NULL`; server-side queries treat `NULL` as `"legacy-stdio"`. No data rewrite — the index is built lazily and the new column is additive. If `quarantine_stale_hnsw` runs during boot, that's expected — the palace is already subject to the same drift today.
 4. **Smoke test.** Run a scripted read + write + search against the server. Confirm it returns expected results.
 5. **Switch clients.** Update client config to set `MEMPALACE_MCP_URL` + `MEMPALACE_MCP_TOKEN` for the palace. Restart client sessions.
 6. **Watch.** Run for a week with the old stdio config commented out (not deleted). If anything regresses, stop the server, uncomment stdio config, restart clients, restore the snapshot if writes diverged.
@@ -163,6 +243,8 @@ No in-flight write handling beyond step 1's quiesce. The old stdio server and th
 8. **In-server concurrency.** Single writer from the MCP perspective, but the server process itself can serialize writes with (a) an in-process async lock, (b) a write queue, (c) per-resource mutexes. Which is warranted, and does it matter for v1?
 9. **Versioning.** MCP capability negotiation covers protocol version. Palace-schema compatibility is separate — how does a client tell if its expected schema matches what the server holds? Is this something v1 needs, or is "breaking schema changes require coordinated rollout" acceptable?
 10. **Embedding model parity across clients.** Under stdio today, every client computes embeddings with whatever model it has. If clients currently disagree, the server transition is a forcing function to unify — or an explicit source of incompatibility we migrate palace-by-palace.
+11. **Read-path auth policy.** Writes always require an authenticated, mapped identity (see Attribution and provenance). For reads — does v1 require the same, or does a valid-but-unmapped token get read-only access? Read-only-anon is convenient for debugging but blurs the attribution boundary.
+12. **Token rotation.** v1 revokes by removing from config + bouncing the server. Is that acceptable for the single-token local case, or does multi-identity remote operation need hot-reload of the token map (SIGHUP, config-watcher, admin endpoint)?
 
 ## Next steps
 
@@ -179,4 +261,6 @@ No in-flight write handling beyond step 1's quiesce. The old stdio server and th
 - [`mempalace/backends/chroma.py:469,490`](https://github.com/vilosource/mempalace/blob/main/mempalace/backends/chroma.py) — `PersistentClient` instantiation
 - [`mempalace/knowledge_graph.py:60,66`](https://github.com/vilosource/mempalace/blob/main/mempalace/knowledge_graph.py) — threading.Lock + WAL pragma
 - [`mempalace/mcp_server.py:117`](https://github.com/vilosource/mempalace/blob/main/mempalace/mcp_server.py) — WAL audit log path
+- [`mempalace/mcp_server.py:139-153`](https://github.com/vilosource/mempalace/blob/main/mempalace/mcp_server.py) — current WAL entry schema (timestamp, operation, params, result)
+- [`mempalace/mcp_server.py:606,1410`](https://github.com/vilosource/mempalace/blob/main/mempalace/mcp_server.py) — `added_by` tool parameter and default
 - MemPalace RFC 002 — "long-lived durable daemon" adapter vocabulary
