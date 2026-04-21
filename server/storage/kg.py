@@ -117,3 +117,91 @@ def invalidate(
         "subject": sub_id, "predicate": pred, "object": obj_id,
         "ended": ended, "rows_affected": affected,
     }
+
+
+# ── Read operations ───────────────────────────────────────────────────────
+
+def _row_to_dict(row: tuple) -> dict:
+    keys = ["id", "subject", "predicate", "object", "valid_from", "valid_to",
+            "confidence", "source_closet", "source_file",
+            "source_drawer_id", "adapter_name", "extracted_at", "caller_id"]
+    return dict(zip(keys, row))
+
+
+def query_entity(
+    kg: sqlite3.Connection,
+    *,
+    entity: str,
+    as_of: str | None,
+    direction: str,
+) -> list[dict]:
+    """Return relationships for `entity`. direction: 'out' | 'in' | 'both'."""
+    eid = entity_id(entity)
+    results: list[dict] = []
+
+    def _run(where: str, args: list) -> list[tuple]:
+        if as_of:
+            where += (" AND (valid_from IS NULL OR valid_from <= ?) "
+                      "AND (valid_to IS NULL OR valid_to >= ?)")
+            args = args + [as_of, as_of]
+        cols = ("id, subject, predicate, object, valid_from, valid_to, "
+                "confidence, source_closet, source_file, source_drawer_id, "
+                "adapter_name, extracted_at, caller_id")
+        return kg.execute(
+            f"SELECT {cols} FROM triples WHERE {where}", args
+        ).fetchall()
+
+    if direction in ("out", "both"):
+        for row in _run("subject = ?", [eid]):
+            d = _row_to_dict(row)
+            d["direction"] = "out"
+            results.append(d)
+    if direction in ("in", "both"):
+        for row in _run("object = ?", [eid]):
+            d = _row_to_dict(row)
+            d["direction"] = "in"
+            results.append(d)
+    return results
+
+
+def timeline(
+    kg: sqlite3.Connection,
+    *,
+    entity: str | None,
+) -> list[dict]:
+    """Chronological list of facts. If entity given, filter to that entity."""
+    cols = ("id, subject, predicate, object, valid_from, valid_to, "
+            "confidence, source_closet, source_file, source_drawer_id, "
+            "adapter_name, extracted_at, caller_id")
+    if entity:
+        eid = entity_id(entity)
+        rows = kg.execute(
+            f"SELECT {cols} FROM triples "
+            "WHERE subject = ? OR object = ? "
+            "ORDER BY COALESCE(valid_from, extracted_at)",
+            (eid, eid),
+        ).fetchall()
+    else:
+        rows = kg.execute(
+            f"SELECT {cols} FROM triples "
+            "ORDER BY COALESCE(valid_from, extracted_at)"
+        ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def stats(kg: sqlite3.Connection) -> dict:
+    ent = kg.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+    tri = kg.execute("SELECT COUNT(*) FROM triples").fetchone()[0]
+    active = kg.execute(
+        "SELECT COUNT(*) FROM triples WHERE valid_to IS NULL"
+    ).fetchone()[0]
+    preds = kg.execute(
+        "SELECT predicate, COUNT(*) FROM triples GROUP BY predicate "
+        "ORDER BY 2 DESC LIMIT 10"
+    ).fetchall()
+    return {
+        "entities": ent,
+        "triples_total": tri,
+        "triples_currently_valid": active,
+        "top_predicates": [{"predicate": p, "count": n} for p, n in preds],
+    }

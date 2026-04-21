@@ -24,6 +24,7 @@ from server.tools import admin as admin_tools
 from server.tools import diary as diary_tools
 from server.tools import drawers as drawer_tools
 from server.tools import kg as kg_tools
+from server.tools import metadata as metadata_tools
 from server.tools import tunnels as tunnel_tools
 from server.wal import WalWriter
 
@@ -45,6 +46,7 @@ def build_app(cfg: ServerConfig | None = None):
     drawer_tools.register(mcp, palace, wal)
     diary_tools.register(mcp, palace, wal)
     kg_tools.register(mcp, palace, wal)
+    metadata_tools.register(mcp, palace)
     tunnel_tools.register(mcp, palace, wal)
 
     async def healthz(request):

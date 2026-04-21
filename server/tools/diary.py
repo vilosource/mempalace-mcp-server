@@ -11,12 +11,47 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
-from server.dispatch import dispatch_write
+from server.dispatch import dispatch_read, dispatch_write
 from server.storage.palace import Palace
 from server.wal import WalWriter
 
 
 def register(mcp, palace: Palace, wal: WalWriter):
+
+    @mcp.tool()
+    async def mempalace_diary_read(
+        agent_name: str,
+        last_n: int = 10,
+    ) -> dict:
+        """Return the most recent diary entries for `agent_name`."""
+        args = {"agent_name": agent_name, "last_n": last_n}
+
+        async def _impl(*, caller_id: str, agent_name, last_n) -> dict:
+            wing = f"wing_{agent_name.lower()}"
+            got = palace.drawers.get(
+                where={"$and": [{"wing": wing}, {"room": "diary"}]},
+                include=["documents", "metadatas"],
+            )
+            entries = [
+                {
+                    "entry_id": did,
+                    "entry": doc,
+                    "topic": m.get("topic", ""),
+                    "filed_at": m.get("filed_at", ""),
+                    "caller_id": m.get("caller_id"),
+                }
+                for did, doc, m in zip(got["ids"], got["documents"], got["metadatas"])
+            ]
+            entries.sort(key=lambda e: e["filed_at"], reverse=True)
+            last_n = max(1, min(int(last_n), 100))
+            return {
+                "agent_name": agent_name,
+                "wing": wing,
+                "entries": entries[:last_n],
+                "total": len(entries),
+            }
+
+        return await dispatch_read("mempalace_diary_read", _impl, args)
 
     @mcp.tool()
     async def mempalace_diary_write(
