@@ -14,6 +14,8 @@ Three sequential phases: **spike → TDD → v1**. Each is a deliverable with ex
 
 This ordering exists because several PRD commitments are measurement-dependent — RAM budget, latency targets, whether embeddings should move client-side — and writing a TDD with placeholder numbers wastes effort.
 
+This plan is written for execution by a Claude Code agent. Phases do not carry labor-time estimates; each phase runs to its exit gate and the next starts immediately. The only dependencies on wall-clock time are M4's real-use soak (regressions that surface through actual usage, not scripted exercise) and any human review steps the operator chooses to insert.
+
 ---
 
 ## Phase 0 — Prototype spike
@@ -64,9 +66,9 @@ The spike succeeds if all of the following hold on a palace with 10K+ drawers:
 
 If any target is missed, that's a finding — it either reshapes the design or gets accepted as a known constraint with explicit justification in the PRD.
 
-### Time estimate
+### Exit gate
 
-2–4 days of focused work. If it sprawls past a week, something is wrong — narrow the scope further.
+All success criteria above are met against a real palace snapshot, or each miss has a documented finding that either reshapes the PRD or is consciously accepted. `spike-REPORT.md` is written. Scope creep into the 26 out-of-spike tools is rejected — any such work waits for v1.
 
 ---
 
@@ -105,13 +107,9 @@ If any target is missed, that's a finding — it either reshapes the design or g
 
 ### Exit criteria
 
-- A second engineer could open the TDD and produce a reasonable implementation without needing clarification on data layout, API shape, or module boundaries.
+- A fresh implementer (human or agent) could open the TDD and produce a reasonable implementation without needing clarification on data layout, API shape, or module boundaries.
 - All "concrete gaps" from the review (stack choice, module layout, schemas, Dockerfile, error codes, health check, logging, tests, threat model) are resolved or consciously deferred with a reason.
 - The spike's numbers appear in the doc as real targets, not placeholders.
-
-### Time estimate
-
-2–3 days.
 
 ---
 
@@ -149,20 +147,16 @@ If any target is missed, that's a finding — it either reshapes the design or g
 1. **M1 — Write path complete.** All 6 palace-write tools plus tunnel ops routed through the chokepoint. WAL entries include `caller_id`. Migration DDL adds the column. Tests pass.
 2. **M2 — Read path complete.** All 18 read tools wired up. Hybrid search with closet boost + BM25 rerank. KG query with temporal filtering. Admin tools rescoped.
 3. **M3 — Ops.** CLI subcommands, Dockerfile, GHCR publishing, health + metrics, structured logs.
-4. **M4 — Migration + pilot.** Scripted migration against one real palace with one user. One-week soak period as described in the PRD. Rollback exercised at least once against a test palace to prove the runbook.
+4. **M4 — Migration + pilot.** Scripted migration against one real palace. Real-use soak period as described in the PRD — continued until the pilot user (or scripted exerciser covering the full tool surface across varied sessions) has shipped N representative workloads without regression. Rollback exercised at least once against a test palace to prove the runbook.
 5. **M5 — v1 release.** Tag, write release notes, close open questions that the v1 process resolved.
 
 ### Acceptance criteria
 
-- One real palace migrated and in use by one real user for one week without regression.
+- One real palace migrated and in active use without regression across a representative set of sessions covering all 31 tools.
 - Rollback procedure executed successfully on a test palace.
 - All spike-measured performance targets met or exceeded on the same palace post-migration.
 - All 31 tools exercised at least once against the running server.
-- Two-client concurrent workload runs for 1 hour without corruption.
-
-### Time estimate
-
-3–5 weeks depending on how much Phase 0/1 surfaced.
+- Two-client concurrent workload runs sustained long enough to surface HNSW-drift regressions if any exist (the spike established a 10-minute floor; v1 should extend this into a longer stress run as part of acceptance).
 
 ---
 
@@ -184,4 +178,4 @@ If any target is missed, that's a finding — it either reshapes the design or g
 
 - Roadmap beyond v1.
 - Cost or budget.
-- Any timeline beyond the rough estimates above (these are "order of magnitude" weeks, not commitments).
+- Calendar schedules. This plan is sequencing and exit criteria, not a timeline. Implementation is executed by a Claude Code agent; phases run back-to-back gated only by the exit criteria above. The only real wall-clock dependencies are in M4's real-use soak (regressions surfacing through actual usage rather than scripted exercise) and anything that depends on human review/approval.

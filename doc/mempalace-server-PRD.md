@@ -324,7 +324,7 @@ The existing MemPalace WAL file is forensic, not replayable (`mcp_server.py:139-
    - `quarantine_stale_hnsw` runs if drift is detected — same behavior as today.
 4. **Smoke test.** Scripted read + write + search via `curl` or test client.
 5. **Switch clients.** Update client config with `MEMPALACE_MCP_URL` + `MEMPALACE_MCP_TOKEN`. Restart sessions.
-6. **Watch.** Run for a week with stdio config commented out (not deleted). If anything regresses, stop the server, revert client config, restore the snapshot if writes diverged.
+6. **Watch.** Keep stdio config commented out (not deleted) while real-use sessions exercise the full tool surface. If anything regresses, stop the server, revert client config, restore the snapshot if writes diverged. Duration is bounded by confidence, not by a fixed calendar window — regressions that only surface through human-driven or varied workloads need enough sessions to appear.
 7. **Delete stdio config.** Rotate the snapshot into normal backup retention.
 
 Rollback during steps 4–6: stop the server, point clients back at stdio, restore the snapshot if writes during trial must be discarded.
